@@ -83,8 +83,24 @@ echo "Using Token: ${RANCHER_TOKEN:0:10}..."
 echo "Test run ID: $TEST_RUN_ID"
 echo "Using namespace: $NS_NAME"
 
+# Function to check if CRD exists
+check_crd_exists() {
+    if kubectl get crd backups.stable.example.com &> /dev/null; then
+        echo "CRD already exists"
+        return 0
+    else
+        echo "CRD does not exist, will create new"
+        return 1
+    fi
+}
+
 # Create CRD
 create_backup_crd() {
+    if check_crd_exists; then
+        return 0
+    fi
+
+    echo "Creating CRD..."
     cat << 'EOF' > backup-crd.yaml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -107,9 +123,11 @@ spec:
                   type: string
                 destination:
                   type: string
-            _id:
-              type: string
-              description: "Original ID before transformation"
+            status:
+              type: object
+              properties:
+                state:
+                  type: string
   scope: Namespaced
   names:
     plural: backups
@@ -119,14 +137,13 @@ spec:
       - bkp
 EOF
 
-    if ! kubectl get crd backups.stable.example.com &> /dev/null; then
-        echo "Creating CRD..."
-        kubectl apply -f backup-crd.yaml
-        echo "Waiting for CRD to be established..."
-        sleep 5
-    else
-        echo "CRD already exists"
+    if ! kubectl apply -f backup-crd.yaml; then
+        echo "Failed to create CRD"
+        exit 1
     fi
+    
+    echo "Waiting for CRD to be established..."
+    sleep 5
 }
 
 # Create test namespace
@@ -151,7 +168,7 @@ metadata:
 spec:
   frequency: "daily"
   destination: "/backup/$name"
-_id: "$original_id"
+id: "backup-$original_id"
 EOF
 }
 
@@ -181,10 +198,11 @@ check_api() {
         local name=$(echo "$response" | jq -r '.data[0].metadata.name')
         
         echo "Checking ID transformation:"
-        echo "Original _id: $_id"
-        echo "Transformed id: $id"
+        echo "Original id: backup-$name"
+        echo "Transformed _id: $_id"
+        echo "New transformed id: $id"
         
-        # Verify id includes namespace and matches expected format
+        # Verify id includes namespace and _id matches original
         if [[ "$id" == "$NS_NAME/$name" && "$_id" == "backup-$name" ]]; then
             echo "✅ Test passed: ID transformation verified"
             TEST_RESULTS+=("PASS")
@@ -246,7 +264,7 @@ create_test_namespace
 echo "Creating test backups..."
 for i in {1..3}; do
     BACKUP_NAME="backup-$i"
-    create_backup $BACKUP_NAME "backup-$BACKUP_NAME"
+    create_backup $BACKUP_NAME "$i"
     echo "Created backup: $BACKUP_NAME"
 done
 
