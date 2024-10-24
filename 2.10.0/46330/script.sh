@@ -288,22 +288,21 @@ cleanup() {
     echo "Before cleanup, please verify the test results above."
     echo "All curl commands are provided for manual verification."
     
-    # Check if running via pipe
+    # Check if we're in a terminal
     if [ -t 0 ]; then
-        # Running directly
         read -p "Do you want to cleanup the test resources? (y/n) " -r
+        echo
     else
-        # Running via curl pipe, need explicit terminal input
-        echo "Do you want to cleanup the test resources? (y/n)"
-        REPLY=""
-        while [[ ! $REPLY =~ ^[YyNn]$ ]]; do
-            read -n 1 REPLY < /dev/tty || {
-                echo "Failed to get input. Skipping cleanup."
-                exit 1
-            }
-        fi
+        while true; do
+            echo "Do you want to cleanup the test resources? (y/n)"
+            read -r response < /dev/tty
+            case $response in
+                [Yy]* ) REPLY="y"; break ;;
+                [Nn]* ) REPLY="n"; break ;;
+                * ) echo "Please answer y or n." ;;
+            esac
+        done
     fi
-    echo
 
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         echo "Starting cleanup process..."
