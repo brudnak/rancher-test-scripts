@@ -283,55 +283,13 @@ for pod in "${POD_NAMES[@]}"; do
     echo "- $pod"
 done
 
-# Cleanup function
-cleanup() {
-    echo "Before cleanup, please verify the test results above."
-    echo "All curl commands are provided for manual verification."
-    
-    # Check if we're in a terminal
-    if [ -t 0 ]; then
-        read -p "Do you want to cleanup the test resources? (y/n) " -r
-        echo
-    else
-        while true; do
-            echo "Do you want to cleanup the test resources? (y/n)"
-            read -r response < /dev/tty
-            case $response in
-                [Yy]* ) REPLY="y"; break ;;
-                [Nn]* ) REPLY="n"; break ;;
-                * ) echo "Please answer y or n." ;;
-            esac
-        done
-    fi
-
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo "Starting cleanup process..."
-        
-        echo "Getting current pods in namespace $NS_NAME..."
-        kubectl get pods -n $NS_NAME || true
-        
-        echo "Deleting pods in namespace $NS_NAME..."
-        kubectl delete pods -n $NS_NAME -l test=synthetic-test --timeout=30s || true
-        sleep 2  # Give some time for pod deletion
-        
-        echo "Deleting namespace $NS_NAME..."
-        kubectl delete ns $NS_NAME --timeout=30s || true
-        sleep 2  # Give some time for namespace deletion
-        
-        echo "Cleanup completed"
-    else
-        echo "Skipping cleanup. To cleanup later, run:"
-        echo "kubectl delete ns $NS_NAME"
-    fi
-}
-
 # Print test summary
 print_test_summary() {
     local total=${#TEST_RESULTS[@]}
     local passed=0
     echo -e "\n============== Test Summary =============="
     echo "Total tests run: $total"
-
+    
     for i in "${!TEST_RESULTS[@]}"; do
         if [[ "${TEST_RESULTS[$i]}" == "PASS" ]]; then
             echo "✅ ${TEST_NAMES[$i]}"
@@ -340,7 +298,7 @@ print_test_summary() {
             echo "❌ ${TEST_NAMES[$i]}"
         fi
     done
-
+    
     echo -e "\nResults:"
     echo "Passed: $passed"
     echo "Failed: $((total - passed))"
@@ -348,8 +306,50 @@ print_test_summary() {
     echo "========================================="
 }
 
-# Print summary before cleanup
+# Run the test summary
 print_test_summary
+
+# Cleanup function
+cleanup() {
+    echo "Before cleanup, please verify the test results above."
+    echo "All curl commands are provided for manual verification."
+    
+    while true; do
+        echo "Do you want to cleanup the test resources? (y/n)"
+        read -r response < /dev/tty || { 
+            echo "Failed to get terminal input. Skipping cleanup."
+            echo "To cleanup manually, run: kubectl delete ns $NS_NAME"
+            return 1
+        }
+        case $response in
+            [Yy]* ) 
+                echo "Starting cleanup process..."
+                
+                echo "Getting current pods in namespace $NS_NAME..."
+                kubectl get pods -n $NS_NAME || true
+                
+                echo "Deleting pods in namespace $NS_NAME..."
+                kubectl delete pods -n $NS_NAME -l test=synthetic-test --timeout=30s || true
+                sleep 2
+                
+                echo "Deleting namespace $NS_NAME..."
+                kubectl delete ns $NS_NAME --timeout=30s || true
+                sleep 2
+                
+                echo "Cleanup completed"
+                break
+                ;;
+            [Nn]* )
+                echo "Skipping cleanup. To cleanup later, run:"
+                echo "kubectl delete ns $NS_NAME"
+                break
+                ;;
+            * )
+                echo "Please answer y or n."
+                ;;
+        esac
+    done
+}
 
 # Run cleanup
 cleanup
