@@ -288,13 +288,23 @@ cleanup() {
     echo "Before cleanup, please verify the test results above."
     echo "All curl commands are provided for manual verification."
     
-    # Force stdin to be a terminal (tty) for read command
-    exec < /dev/tty || true
-    
-    echo -n "Do you want to cleanup the test resources? (y/n) "
-    read -r REPLY
+    # Check if running via pipe
+    if [ -t 0 ]; then
+        # Running directly
+        read -p "Do you want to cleanup the test resources? (y/n) " -r
+    else
+        # Running via curl pipe, need explicit terminal input
+        echo "Do you want to cleanup the test resources? (y/n)"
+        REPLY=""
+        while [[ ! $REPLY =~ ^[YyNn]$ ]]; do
+            read -n 1 REPLY < /dev/tty || {
+                echo "Failed to get input. Skipping cleanup."
+                exit 1
+            }
+        fi
+    fi
     echo
-    
+
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         echo "Starting cleanup process..."
         
