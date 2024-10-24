@@ -9,5 +9,5 @@
 Run this script with:
 
 ```sh
-curl -s https://raw.githubusercontent.com/brudnak/repo/main/script.sh | bash -s rancher.url token123 local.yaml
+curl -s https://raw.githubusercontent.com/brudnak/rancher-test-scripts/refs/heads/main/2.10.0/46330/script.sh | bash -s rancher.url token123 local.yaml
 ```
