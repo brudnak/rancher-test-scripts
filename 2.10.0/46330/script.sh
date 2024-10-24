@@ -287,22 +287,28 @@ done
 cleanup() {
     echo "Before cleanup, please verify the test results above."
     echo "All curl commands are provided for manual verification."
-    read -p "Do you want to cleanup the test resources? (y/n) " -n 1 -r
+    
+    # Force stdin to be a terminal (tty) for read command
+    exec < /dev/tty || true
+    
+    echo -n "Do you want to cleanup the test resources? (y/n) "
+    read -r REPLY
     echo
+    
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         echo "Starting cleanup process..."
-
+        
         echo "Getting current pods in namespace $NS_NAME..."
         kubectl get pods -n $NS_NAME || true
-
+        
         echo "Deleting pods in namespace $NS_NAME..."
         kubectl delete pods -n $NS_NAME -l test=synthetic-test --timeout=30s || true
         sleep 2  # Give some time for pod deletion
-
+        
         echo "Deleting namespace $NS_NAME..."
         kubectl delete ns $NS_NAME --timeout=30s || true
         sleep 2  # Give some time for namespace deletion
-
+        
         echo "Cleanup completed"
     else
         echo "Skipping cleanup. To cleanup later, run:"
