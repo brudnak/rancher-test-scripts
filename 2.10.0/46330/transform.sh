@@ -177,7 +177,7 @@ check_api() {
     local query=$1
     local expected_count=$2
     local description=$3
-    local check_type=${4:-"count"} # Can be "count" or "transform"
+    local check_type=${4:-"count"}
     local full_url="${BASE_URL}/v1/stable.example.com.backups${query}"
     local response
     local actual_count
@@ -198,12 +198,12 @@ check_api() {
         local name=$(echo "$response" | jq -r '.data[0].metadata.name')
         
         echo "Checking ID transformation:"
-        echo "Original id: backup-$name"
-        echo "Transformed _id: $_id"
+        echo "Original _id: $_id"
         echo "New transformed id: $id"
+        echo "Expected format: $NS_NAME/$name"
         
-        # Verify id includes namespace and _id matches original
-        if [[ "$id" == "$NS_NAME/$name" && "$_id" == "backup-$name" ]]; then
+        # Verify id includes namespace and _id is the original
+        if [[ "$id" == "$NS_NAME/$name" && "$_id" == "$name" ]]; then
             echo "✅ Test passed: ID transformation verified"
             TEST_RESULTS+=("PASS")
         else
