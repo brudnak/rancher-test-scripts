@@ -22,8 +22,8 @@ show_usage() {
     echo "  $0 --dry-run      # Dry run: only report findings without making changes"
     echo
     echo -e "${BOLD}Curl Usage:${NC}"
-    echo "  curl -sL https://raw.githubusercontent.com/brudnak/rancher-test-scripts/main/script.sh | zsh"
-    echo "  curl -sL https://raw.githubusercontent.com/brudnak/rancher-test-scripts/main/script.sh | zsh -s -- --auto-mode"
+    echo "  curl -sL https://raw.githubusercontent.com/brudnak/rancher-test-scripts/refs/heads/main/vai/delete-vai/script.sh | zsh"
+    echo "  curl -sL https://raw.githubusercontent.com/brudnak/rancher-test-scripts/refs/heads/main/vai/delete-vai/script.sh | zsh -s -- --auto-mode"
 }
 
 check_prerequisites() {
