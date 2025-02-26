@@ -213,7 +213,13 @@ for pod in "${PODS[@]}"; do
         echo -e "${BLUE}[DRY RUN] Would ask whether to delete vai-query from pod $pod${NC}"
     else
         echo -ne "${BOLD}Delete vai-query from this pod? [y/N]: ${NC}"
-        read -r answer
+        if [ -t 0 ]; then
+            # Terminal is interactive
+            read -r answer </dev/tty
+        else
+            # Running via pipe (curl)
+            read -r answer
+        fi
         
         if [[ "$answer" =~ ^[Yy]$ ]]; then
             echo -e "${RED}Deleting vai-query from pod $pod...${NC}"
