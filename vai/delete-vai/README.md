@@ -12,11 +12,11 @@
 #### Auto Mode
 
 ```sh
-curl -sL https://raw.githubusercontent.com/brudnak/rancher-test-scripts/refs/heads/main/vai/delete-vai/script.sh | zsh -s -- --auto-mode" 
+curl -sL https://raw.githubusercontent.com/brudnak/rancher-test-scripts/refs/heads/main/vai/delete-vai/script.sh | zsh -s -- --auto-mode
 ```
 
 #### Dry Run
 
 ```sh
-curl -sL https://raw.githubusercontent.com/brudnak/rancher-test-scripts/refs/heads/main/vai/delete-vai/script.sh | zsh -s -- --dry-run" 
+curl -sL https://raw.githubusercontent.com/brudnak/rancher-test-scripts/refs/heads/main/vai/delete-vai/script.sh | zsh -s -- --dry-run
 ```
