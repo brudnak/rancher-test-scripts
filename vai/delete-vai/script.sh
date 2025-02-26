@@ -7,6 +7,18 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 BOLD='\033[1m'
 
+# Detect if script is being piped through curl
+if [ -p /dev/stdin ] && [ -t 1 ]; then
+  # We're being piped through curl to a terminal
+  # Re-execute the script directly to handle input properly
+  SCRIPT_CONTENT=$(cat)
+  echo "$SCRIPT_CONTENT" > /tmp/vai-query-checker-$$.sh
+  chmod +x /tmp/vai-query-checker-$$.sh
+  exec /tmp/vai-query-checker-$$.sh "$@"
+  # The script will continue from the new instance
+  # This instance will exit
+fi
+
 show_usage() {
     echo -e "${BOLD}Usage:${NC}"
     echo "  $0 [options]"
@@ -212,14 +224,26 @@ for pod in "${PODS[@]}"; do
     elif [ "$DRY_RUN" = true ]; then
         echo -e "${BLUE}[DRY RUN] Would ask whether to delete vai-query from pod $pod${NC}"
     else
-        echo -ne "${BOLD}Delete vai-query from this pod? [y/N]: ${NC}"
-        if [ -t 0 ]; then
-            # Terminal is interactive
-            read -r answer </dev/tty
-        else
-            # Running via pipe (curl)
-            read -r answer
-        fi
+        # Force interactive input
+        echo -e "${BOLD}Delete vai-query from this pod? [y/N]:${NC} "
+        stty -echo
+        answer=""
+        while IFS= read -r -n1 key; do
+            if [[ $key == $'\0' ]]; then
+                break
+            fi
+            
+            if [[ $key == $'\n' ]]; then
+                echo
+                break
+            fi
+            
+            # Echo the key back to the screen
+            echo -n "$key"
+            answer="$answer$key"
+        done
+        stty echo
+        echo
         
         if [[ "$answer" =~ ^[Yy]$ ]]; then
             echo -e "${RED}Deleting vai-query from pod $pod...${NC}"
@@ -248,3 +272,8 @@ for pod in "${PODS[@]}"; do
 done
 
 print_summary
+
+# Clean up if we created a temporary script
+if [ -f /tmp/vai-query-checker-$$.sh ]; then
+    rm -f /tmp/vai-query-checker-$$.sh
+fi
