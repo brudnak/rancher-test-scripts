@@ -10,3 +10,9 @@
 | ----------------------------- |
 | [VAI](/vai/README.md)         |
 | [Webhook](/webhook/README.md) |
+
+| General Use                                     |
+| ----------------------------------------------- |
+| [Test Plan Generator](/test-plan-gen/README.md) |
+| [HA Rancher Port Scan](/ha-port-scan/README.md) |
+
