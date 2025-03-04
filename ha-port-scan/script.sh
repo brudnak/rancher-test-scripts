@@ -2,7 +2,7 @@
 set -e
 
 # Allow script to be run via curl
-# Example usage: curl -s url | bash
+# Example usage: curl -s https://raw.githubusercontent.com/brudnak/rancher-test-scripts/refs/heads/main/ha-port-scan/script.sh | bash
 
 # Set default variables
 PORT_TO_CHECK="${PORT_TO_CHECK:-6666}"
