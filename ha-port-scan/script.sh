@@ -6,8 +6,8 @@ set -e
 
 # Set default variables
 PORT_TO_CHECK="${PORT_TO_CHECK:-6666}"
-PORT_HEX="${PORT_HEX:-1A0A}"
-KUBECONFIG="${KUBECONFIG:-local.yaml}"
+PORT_HEX="${PORT_HEX:-0A1A}"  # Hex representation for port 6666 in little-endian format
+KUBECONFIG="${KUBECONFIG:-local.yaml}"  # Default kubeconfig file name from Rancher
 NAMESPACE="${NAMESPACE:-cattle-system}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_DIR="port-check-${TIMESTAMP}"
@@ -17,6 +17,7 @@ echo "======================================================"
 echo "   Rancher Pod Port Check - $(date)"
 echo "======================================================"
 echo "Checking for port ${PORT_TO_CHECK} (hex: ${PORT_HEX}) in Rancher pods"
+echo "Using kubeconfig file: ${KUBECONFIG}"
 echo ""
 
 # Create log directory
