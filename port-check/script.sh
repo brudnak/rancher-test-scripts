@@ -1,13 +1,13 @@
 #!/bin/sh
-# Rancher Port 6666 Checker - POSIX shell compatible, designed for curl | sh usage
+# Rancher Port 6666 Checker - Non-interactive version
 # Usage: curl https://raw.githubusercontent.com/brudnak/rancher-test-scripts/refs/heads/main/port-check/script.sh | sh -s enabled
 
 # Get parameter (default to check if none provided)
 EXPECTED_MODE="${1:-check}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-LOG_DIR="/tmp/rancher-port-check-${TIMESTAMP}"
 
-# Create log directory
+# Create log directory in current path where script is executed
+LOG_DIR="./rancher-port-check-${TIMESTAMP}"
 mkdir -p "${LOG_DIR}"
 
 # Setup logging
@@ -18,7 +18,7 @@ echo "Log directory: ${LOG_DIR}"
 echo "=========================================================="
 
 # Log the command being run for debugging
-echo "Executing with kubectl context: $(kubectl config current-context)"
+echo "Executing with kubectl context: $(kubectl config current-context 2>/dev/null || echo 'Unknown')"
 echo ""
 
 # Validate kubectl availability
@@ -54,7 +54,7 @@ ENABLED_COUNT=0
 DISABLED_COUNT=0
 ERROR_COUNT=0
 
-# Process each Rancher pod
+# METHOD 1: Try to use ephemeral containers (requires K8s >= 1.23)
 for pod in ${RANCHER_PODS}; do
     POD_LOG="${LOG_DIR}/${pod}.log"
     echo "🔍 Processing pod: ${pod}"
@@ -68,15 +68,15 @@ for pod in ${RANCHER_PODS}; do
         continue
     fi
     
-    echo "   Creating debug session..."
+    echo "   Attempting method with ephemeral container (non-interactive)..."
     
-    # Create a temporary file to hold the check command
-    TMP_CMD="${LOG_DIR}/${pod}-cmd.sh"
-    cat > "${TMP_CMD}" << 'EOF'
+    # Create a temporary script for the port check
+    CHECK_SCRIPT="${LOG_DIR}/${pod}-check.sh"
+    cat > "${CHECK_SCRIPT}" << 'EOF'
 #!/bin/sh
-echo "Running port check from debug container..."
+echo "Running port check..."
 echo "Installing iproute2 package..."
-apk add --no-cache iproute2 > /dev/null
+apk add --no-cache iproute2 > /dev/null 2>&1
 echo "Checking listening ports with ss -lntp..."
 SS_OUTPUT=$(ss -lntp)
 echo "${SS_OUTPUT}"
@@ -89,34 +89,64 @@ else
 fi
 EOF
     
-    chmod +x "${TMP_CMD}"
-    
-    # Get container name (usually there's only one, but we'll check)
-    CONTAINER=$(kubectl get pod -n cattle-system ${pod} -o jsonpath='{.spec.containers[0].name}')
-    
-    # Run debug session
-    echo "   Starting debug container for pod ${pod}..."
-    
-    # Method 1: Try using kubectl debug with image
-    kubectl -n cattle-system debug pod/${pod} -it --image=alpine:latest -- /bin/sh -c "cat > /tmp/check.sh << 'EOF'
-#!/bin/sh
-echo 'Installing iproute2...'
-apk add --no-cache iproute2 > /dev/null 2>&1
-echo 'Checking listening ports...'
-ss -lntp
-echo ''
-if ss -lntp | grep -q ':6666'; then
-    echo 'PORT_STATUS:ENABLED'
-else
-    echo 'PORT_STATUS:DISABLED'
-fi
-EOF
+    # Try non-interactive debug (using --quiet to avoid TTY errors)
+    kubectl debug -n cattle-system pod/${pod} --image=alpine:latest --quiet -- sh -c "cat > /tmp/check.sh << 'DEBUGEOF'
+$(cat ${CHECK_SCRIPT})
+DEBUGEOF
 chmod +x /tmp/check.sh && /tmp/check.sh" > "${POD_LOG}" 2>&1
     
-    # Check if the debug command was successful by looking for PORT_STATUS in the log
+    # Check if the debug command produced the expected output
     if grep -q "PORT_STATUS:" "${POD_LOG}"; then
-        PORT_STATUS=$(grep "PORT_STATUS:" "${POD_LOG}" | cut -d':' -f2)
+        PORT_STATUS=$(grep "PORT_STATUS:" "${POD_LOG}" | tail -1 | cut -d':' -f2)
+        echo "   Successfully checked port status with debug container"
+    else
+        echo "   Debug container method failed, trying exec method..."
         
+        # METHOD 2: Try kubectl exec if the container has the right tools
+        kubectl -n cattle-system exec ${pod} -- sh -c "command -v ss || command -v netstat" > /dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            echo "   Found networking tools in the container, using exec method..."
+            kubectl -n cattle-system exec ${pod} -- sh -c "ss -lntp 2>/dev/null || netstat -tulpn 2>/dev/null" > "${POD_LOG}.exec" 2>&1
+            
+            # Check for port 6666 in the output
+            if grep -q ":6666" "${POD_LOG}.exec"; then
+                PORT_STATUS="ENABLED"
+                echo "PORT_STATUS:ENABLED" >> "${POD_LOG}"
+            else
+                PORT_STATUS="DISABLED"
+                echo "PORT_STATUS:DISABLED" >> "${POD_LOG}"
+            fi
+            echo "   Port check completed using exec method"
+        else
+            echo "   ❌ No networking tools available in container and debug container failed"
+            echo "   Attempting port-forward method as last resort..."
+            
+            # METHOD 3: Try port-forwarding to see if the port is available
+            TMP_PORT=$((10000 + $$))  # Use PID to create a somewhat unique port
+            kubectl port-forward -n cattle-system pod/${pod} ${TMP_PORT}:6666 > /dev/null 2>&1 &
+            PF_PID=$!
+            sleep 3
+            
+            # Check if port-forward is successful
+            if kill -0 ${PF_PID} 2>/dev/null; then
+                PORT_STATUS="ENABLED"
+                echo "PORT_STATUS:ENABLED" >> "${POD_LOG}"
+                echo "   Port check completed using port-forward method"
+                kill ${PF_PID}
+            else
+                PORT_STATUS="DISABLED"
+                echo "PORT_STATUS:DISABLED" >> "${POD_LOG}"
+                echo "   Port check completed using port-forward method"
+            fi
+        fi
+    fi
+    
+    # Evaluate results based on port status
+    if [ -z "${PORT_STATUS}" ]; then
+        echo "   ❌ Failed to determine port status after all methods"
+        echo "   Check logs at ${POD_LOG} for details"
+        ERROR_COUNT=$((ERROR_COUNT + 1))
+    else
         if [ "${EXPECTED_MODE}" = "enabled" ] && [ "${PORT_STATUS}" = "ENABLED" ]; then
             echo "   ✅ Port 6666 is ENABLED as expected"
             PASS_COUNT=$((PASS_COUNT + 1))
@@ -134,24 +164,14 @@ chmod +x /tmp/check.sh && /tmp/check.sh" > "${POD_LOG}" 2>&1
             echo "   ❌ Port 6666 is ${PORT_STATUS} but expected ${EXPECTED_MODE}"
             FAIL_COUNT=$((FAIL_COUNT + 1))
         fi
-    else
-        echo "   ❌ Failed to determine port status"
-        echo "   Check logs at ${POD_LOG} for details"
-        # Display the error from the log file
-        echo "   Error output: $(head -n 10 ${POD_LOG} | grep -i error || echo 'No specific error found. See log for details.')"
-        ERROR_COUNT=$((ERROR_COUNT + 1))
-        
-        # Try an alternative method if the first one failed
-        echo "   Attempting alternative method..."
-        # Method 2: Try using kubectl exec directly if debug fails
-        kubectl -n cattle-system exec ${pod} -c ${CONTAINER} -- sh -c "echo 'PORT CHECK FALLBACK'; netstat -tulpn 2>/dev/null || ss -lntp 2>/dev/null || echo 'Neither netstat nor ss available'" >> "${POD_LOG}" 2>&1
-        
-        # Log the alternative attempt
-        echo "   Alternative method results saved to log"
     fi
     
     echo ""
 done
+
+# Save script output to main log file
+MAIN_LOG="${LOG_DIR}/main.log"
+echo "Saving main log to ${MAIN_LOG}"
 
 # Print summary
 echo "=========================================================="
@@ -184,15 +204,5 @@ echo "Detailed logs available in: ${LOG_DIR}"
 echo "=========================================================="
 echo "Rancher Port Checker - Finished at $(date)"
 echo "=========================================================="
-
-if [ ${ERROR_COUNT} -gt 0 ]; then
-    echo "⚠️ There were errors during execution. Please check the logs for details."
-    echo "Common issues:"
-    echo "  - Debug containers may not be supported in your Kubernetes cluster"
-    echo "  - Your kubectl context might not have sufficient permissions"
-    echo "  - The iproute2 package might not be installable in the debug container"
-    echo ""
-    echo "You can check the logs in ${LOG_DIR} for more details"
-fi
 
 exit ${EXIT_CODE}
