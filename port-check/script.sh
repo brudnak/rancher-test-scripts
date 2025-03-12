@@ -1,11 +1,8 @@
-#!/bin/bash
-# curl https://url.sh | sh -s -- [enabled|disabled|check]
+#!/bin/sh
+# This script can be served from a web server and executed via:
+# curl https://raw.githubusercontent.com/brudnak/rancher-test-scripts/refs/heads/main/port-check/script.sh | sh -s enabled|disabled|check
 
-cat << 'SCRIPT_EOF' > /tmp/rancher-port-check.sh
-#!/bin/bash
-set -e
-
-# Initialize variables
+# Get parameter
 EXPECTED_MODE="${1:-check}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_DIR="/tmp/rancher-port-check-${TIMESTAMP}"
@@ -14,47 +11,39 @@ SCRIPT_LOG="${LOG_DIR}/script.log"
 # Create log directory
 mkdir -p "${LOG_DIR}"
 
-# Setup logging
-exec > >(tee -a "${SCRIPT_LOG}") 2>&1
-
-echo "=========================================================="
-echo "Rancher Port Checker - Started at $(date)"
-echo "Mode: ${EXPECTED_MODE}"
-echo "Log directory: ${LOG_DIR}"
-echo "=========================================================="
+# Setup logging (compatible with sh)
+exec > "${SCRIPT_LOG}" 2>&1
+exec 3>&1
+echo "==========================================================" | tee /dev/fd/3
+echo "Rancher Port Checker - Started at $(date)" | tee /dev/fd/3
+echo "Mode: ${EXPECTED_MODE}" | tee /dev/fd/3
+echo "Log directory: ${LOG_DIR}" | tee /dev/fd/3
+echo "==========================================================" | tee /dev/fd/3
 
 # Validate kubectl availability
-if ! command -v kubectl &> /dev/null; then
-    echo "❌ Error: kubectl is not installed or not in PATH"
+if ! command -v kubectl > /dev/null 2>&1; then
+    echo "❌ Error: kubectl is not installed or not in PATH" | tee /dev/fd/3
     exit 1
 fi
 
 # Validate namespace exists
-if ! kubectl get namespace cattle-system &> /dev/null; then
-    echo "❌ Error: cattle-system namespace not found"
+if ! kubectl get namespace cattle-system > /dev/null 2>&1; then
+    echo "❌ Error: cattle-system namespace not found" | tee /dev/fd/3
     exit 1
 fi
-
-# Function to check if string is in array
-contains() {
-    local element match="$1"
-    shift
-    for element; do
-        [[ "${element}" == "${match}" ]] && return 0
-    done
-    return 1
-}
 
 # Get all rancher pods (filtering out webhooks and other non-rancher pods)
-echo "📋 Retrieving Rancher pods from cattle-system namespace..."
-RANCHER_PODS=($(kubectl get pods -n cattle-system --no-headers | grep "^rancher-" | grep -v webhook | awk '{print $1}'))
+echo "📋 Retrieving Rancher pods from cattle-system namespace..." | tee /dev/fd/3
+RANCHER_PODS=$(kubectl get pods -n cattle-system --no-headers | grep "^rancher-" | grep -v webhook | awk '{print $1}')
 
-if [ ${#RANCHER_PODS[@]} -eq 0 ]; then
-    echo "❌ Error: No Rancher pods found in cattle-system namespace"
+if [ -z "${RANCHER_PODS}" ]; then
+    echo "❌ Error: No Rancher pods found in cattle-system namespace" | tee /dev/fd/3
     exit 1
 fi
 
-echo "✅ Found ${#RANCHER_PODS[@]} Rancher pods"
+# Count pods (sh compatible)
+POD_COUNT=$(echo "${RANCHER_PODS}" | wc -w)
+echo "✅ Found ${POD_COUNT} Rancher pods" | tee /dev/fd/3
 
 # Create the debug script that will be executed in the debug container
 cat << 'EOF' > "${LOG_DIR}/check-ports.sh"
@@ -79,20 +68,28 @@ EOF
 # Make the script executable
 chmod +x "${LOG_DIR}/check-ports.sh"
 
-# Array to store results
-declare -A RESULTS
+# Initialize counters
+PASS_COUNT=0
+FAIL_COUNT=0
+ENABLED_COUNT=0
+DISABLED_COUNT=0
+ERROR_COUNT=0
 
 # Process each Rancher pod
-for pod in "${RANCHER_PODS[@]}"; do
+for pod in ${RANCHER_PODS}; do
     POD_LOG="${LOG_DIR}/${pod}.log"
-    echo ""
-    echo "🔍 Processing pod: ${pod}"
-    echo "   Log file: ${POD_LOG}"
-    
-    # Copy the check script to a temporary file in the pod
-    echo "   Creating debug container..."
+    echo "" | tee /dev/fd/3
+    echo "🔍 Processing pod: ${pod}" | tee /dev/fd/3
+    echo "   Log file: ${POD_LOG}" | tee /dev/fd/3
     
     # Execute in a debug container
+    echo "   Creating debug container..." | tee /dev/fd/3
+    
+    # Create a temporary file with the debug script content
+    DEBUG_SCRIPT="${LOG_DIR}/${pod}-debug-script.sh"
+    cat "${LOG_DIR}/check-ports.sh" > "${DEBUG_SCRIPT}"
+    
+    # Execute debug container with script
     DEBUG_OUTPUT=$(kubectl -n cattle-system debug ${pod} -it --image=alpine:latest -- /bin/sh -c "cat > /tmp/check-ports.sh << 'INNEREOF'
 $(cat ${LOG_DIR}/check-ports.sh)
 INNEREOF
@@ -108,79 +105,62 @@ chmod +x /tmp/check-ports.sh
     
     if [ -z "${PORT_STATUS}" ]; then
         STATUS="ERROR"
-        echo "❌ Failed to determine port status for pod: ${pod}"
+        echo "❌ Failed to determine port status for pod: ${pod}" | tee /dev/fd/3
+        ERROR_COUNT=$((ERROR_COUNT + 1))
     else
         STATUS="${PORT_STATUS}"
         
-        if [ "${EXPECTED_MODE}" == "enabled" ] && [ "${STATUS}" == "ENABLED" ]; then
-            echo "✅ Port 6666 is ENABLED as expected on pod: ${pod}"
-            RESULTS["${pod}"]="PASS"
-        elif [ "${EXPECTED_MODE}" == "disabled" ] && [ "${STATUS}" == "DISABLED" ]; then
-            echo "✅ Port 6666 is DISABLED as expected on pod: ${pod}"
-            RESULTS["${pod}"]="PASS"
-        elif [ "${EXPECTED_MODE}" == "check" ]; then
-            echo "ℹ️ Port 6666 is ${STATUS} on pod: ${pod}"
-            RESULTS["${pod}"]="${STATUS}"
+        if [ "${EXPECTED_MODE}" = "enabled" ] && [ "${STATUS}" = "ENABLED" ]; then
+            echo "✅ Port 6666 is ENABLED as expected on pod: ${pod}" | tee /dev/fd/3
+            PASS_COUNT=$((PASS_COUNT + 1))
+        elif [ "${EXPECTED_MODE}" = "disabled" ] && [ "${STATUS}" = "DISABLED" ]; then
+            echo "✅ Port 6666 is DISABLED as expected on pod: ${pod}" | tee /dev/fd/3
+            PASS_COUNT=$((PASS_COUNT + 1))
+        elif [ "${EXPECTED_MODE}" = "check" ]; then
+            echo "ℹ️ Port 6666 is ${STATUS} on pod: ${pod}" | tee /dev/fd/3
+            if [ "${STATUS}" = "ENABLED" ]; then
+                ENABLED_COUNT=$((ENABLED_COUNT + 1))
+            else
+                DISABLED_COUNT=$((DISABLED_COUNT + 1))
+            fi
         else
-            echo "❌ Port 6666 is ${STATUS} but expected ${EXPECTED_MODE} on pod: ${pod}"
-            RESULTS["${pod}"]="FAIL"
+            echo "❌ Port 6666 is ${STATUS} but expected ${EXPECTED_MODE} on pod: ${pod}" | tee /dev/fd/3
+            FAIL_COUNT=$((FAIL_COUNT + 1))
         fi
     fi
 done
 
 # Print summary
-echo ""
-echo "=========================================================="
-echo "SUMMARY REPORT"
-echo "=========================================================="
-echo "Mode: ${EXPECTED_MODE}"
-echo "Total pods checked: ${#RANCHER_PODS[@]}"
-
-# Count results
-PASS_COUNT=0
-FAIL_COUNT=0
-ENABLED_COUNT=0
-DISABLED_COUNT=0
-ERROR_COUNT=0
-
-for pod in "${RANCHER_PODS[@]}"; do
-    result="${RESULTS["${pod}"]}"
-    case "${result}" in
-        "PASS") ((PASS_COUNT++)) ;;
-        "FAIL") ((FAIL_COUNT++)) ;;
-        "ENABLED") ((ENABLED_COUNT++)) ;;
-        "DISABLED") ((DISABLED_COUNT++)) ;;
-        *) ((ERROR_COUNT++)) ;;
-    esac
-done
+echo "" | tee /dev/fd/3
+echo "==========================================================" | tee /dev/fd/3
+echo "SUMMARY REPORT" | tee /dev/fd/3
+echo "==========================================================" | tee /dev/fd/3
+echo "Mode: ${EXPECTED_MODE}" | tee /dev/fd/3
+echo "Total pods checked: ${POD_COUNT}" | tee /dev/fd/3
 
 if [ "${EXPECTED_MODE}" != "check" ]; then
-    echo "Passed: ${PASS_COUNT}/${#RANCHER_PODS[@]}"
-    echo "Failed: ${FAIL_COUNT}/${#RANCHER_PODS[@]}"
-    echo "Errors: ${ERROR_COUNT}/${#RANCHER_PODS[@]}"
+    echo "Passed: ${PASS_COUNT}/${POD_COUNT}" | tee /dev/fd/3
+    echo "Failed: ${FAIL_COUNT}/${POD_COUNT}" | tee /dev/fd/3
+    echo "Errors: ${ERROR_COUNT}/${POD_COUNT}" | tee /dev/fd/3
     
     if [ ${FAIL_COUNT} -eq 0 ] && [ ${ERROR_COUNT} -eq 0 ]; then
-        echo "✅ All pods match expected state: ${EXPECTED_MODE}"
+        echo "✅ All pods match expected state: ${EXPECTED_MODE}" | tee /dev/fd/3
         EXIT_CODE=0
     else
-        echo "❌ Some pods do not match expected state: ${EXPECTED_MODE}"
+        echo "❌ Some pods do not match expected state: ${EXPECTED_MODE}" | tee /dev/fd/3
         EXIT_CODE=1
     fi
 else
-    echo "Enabled: ${ENABLED_COUNT}/${#RANCHER_PODS[@]}"
-    echo "Disabled: ${DISABLED_COUNT}/${#RANCHER_PODS[@]}"
-    echo "Errors: ${ERROR_COUNT}/${#RANCHER_PODS[@]}"
+    echo "Enabled: ${ENABLED_COUNT}/${POD_COUNT}" | tee /dev/fd/3
+    echo "Disabled: ${DISABLED_COUNT}/${POD_COUNT}" | tee /dev/fd/3
+    echo "Errors: ${ERROR_COUNT}/${POD_COUNT}" | tee /dev/fd/3
     EXIT_CODE=0
 fi
 
-echo ""
-echo "Detailed logs available in: ${LOG_DIR}"
-echo "=========================================================="
-echo "Rancher Port Checker - Finished at $(date)"
-echo "=========================================================="
+echo "" | tee /dev/fd/3
+echo "Detailed logs available in: ${LOG_DIR}" | tee /dev/fd/3
+echo "==========================================================" | tee /dev/fd/3
+echo "Rancher Port Checker - Finished at $(date)" | tee /dev/fd/3
+echo "==========================================================" | tee /dev/fd/3
 
 exit ${EXIT_CODE}
-SCRIPT_EOF
-
-chmod +x /tmp/rancher-port-check.sh
-/tmp/rancher-port-check.sh "$@"
