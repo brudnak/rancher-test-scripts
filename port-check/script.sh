@@ -1,5 +1,5 @@
 #!/bin/sh
-# Rancher Port 6666 Checker - Non-interactive version
+# Rancher Port 6666 Checker - Using port-forward method only
 # Usage: curl https://raw.githubusercontent.com/brudnak/rancher-test-scripts/refs/heads/main/port-check/script.sh | sh -s enabled
 
 # Get parameter (default to check if none provided)
@@ -54,7 +54,7 @@ ENABLED_COUNT=0
 DISABLED_COUNT=0
 ERROR_COUNT=0
 
-# METHOD 1: Try to use ephemeral containers (requires K8s >= 1.23)
+# Process each Rancher pod using port-forward method only
 for pod in ${RANCHER_PODS}; do
     POD_LOG="${LOG_DIR}/${pod}.log"
     echo "🔍 Processing pod: ${pod}"
@@ -68,82 +68,64 @@ for pod in ${RANCHER_PODS}; do
         continue
     fi
     
-    echo "   Attempting method with ephemeral container (non-interactive)..."
+    echo "   Checking port 6666 using port-forward method..."
     
-    # Create a temporary script for the port check
-    CHECK_SCRIPT="${LOG_DIR}/${pod}-check.sh"
-    cat > "${CHECK_SCRIPT}" << 'EOF'
-#!/bin/sh
-echo "Running port check..."
-echo "Installing iproute2 package..."
-apk add --no-cache iproute2 > /dev/null 2>&1
-echo "Checking listening ports with ss -lntp..."
-SS_OUTPUT=$(ss -lntp)
-echo "${SS_OUTPUT}"
-
-# Check specifically for port 6666
-if echo "${SS_OUTPUT}" | grep -q ":6666"; then
-    echo "PORT_STATUS:ENABLED"
-else
-    echo "PORT_STATUS:DISABLED"
-fi
-EOF
+    # Use a unique port based on PID to avoid conflicts
+    TMP_PORT=$((10000 + $$))
     
-    # Try non-interactive debug (using --quiet to avoid TTY errors)
-    kubectl debug -n cattle-system pod/${pod} --image=alpine:latest --quiet -- sh -c "cat > /tmp/check.sh << 'DEBUGEOF'
-$(cat ${CHECK_SCRIPT})
-DEBUGEOF
-chmod +x /tmp/check.sh && /tmp/check.sh" > "${POD_LOG}" 2>&1
+    # Try port-forwarding to see if the port is available
+    kubectl port-forward -n cattle-system pod/${pod} ${TMP_PORT}:6666 > "${POD_LOG}.portforward" 2>&1 &
+    PF_PID=$!
     
-    # Check if the debug command produced the expected output
-    if grep -q "PORT_STATUS:" "${POD_LOG}"; then
-        PORT_STATUS=$(grep "PORT_STATUS:" "${POD_LOG}" | tail -1 | cut -d':' -f2)
-        echo "   Successfully checked port status with debug container"
-    else
-        echo "   Debug container method failed, trying exec method..."
+    # Give it a moment to establish
+    sleep 2
+    
+    # Check if port-forward is running (which means the port exists)
+    if kill -0 ${PF_PID} 2>/dev/null; then
+        # The port is available for forwarding, meaning it's listening in the pod
+        PORT_STATUS="ENABLED"
+        echo "PORT_STATUS:ENABLED" > "${POD_LOG}"
         
-        # METHOD 2: Try kubectl exec if the container has the right tools
-        kubectl -n cattle-system exec ${pod} -- sh -c "command -v ss || command -v netstat" > /dev/null 2>&1
-        if [ $? -eq 0 ]; then
-            echo "   Found networking tools in the container, using exec method..."
-            kubectl -n cattle-system exec ${pod} -- sh -c "ss -lntp 2>/dev/null || netstat -tulpn 2>/dev/null" > "${POD_LOG}.exec" 2>&1
-            
-            # Check for port 6666 in the output
-            if grep -q ":6666" "${POD_LOG}.exec"; then
-                PORT_STATUS="ENABLED"
-                echo "PORT_STATUS:ENABLED" >> "${POD_LOG}"
-            else
-                PORT_STATUS="DISABLED"
-                echo "PORT_STATUS:DISABLED" >> "${POD_LOG}"
-            fi
-            echo "   Port check completed using exec method"
+        # Clean up the port-forward
+        kill ${PF_PID} 2>/dev/null
+        wait ${PF_PID} 2>/dev/null
+        
+        echo "   Port 6666 is ENABLED (port-forward successful)"
+    else
+        # Check the error message to see if it's because the port doesn't exist
+        if grep -q "unknown port name or number: 6666" "${POD_LOG}.portforward" || \
+           grep -q "address already in use" "${POD_LOG}.portforward"; then
+            PORT_STATUS="DISABLED"
+            echo "PORT_STATUS:DISABLED" > "${POD_LOG}"
+            echo "   Port 6666 is DISABLED (port-forward failed - port not available)"
         else
-            echo "   ❌ No networking tools available in container and debug container failed"
-            echo "   Attempting port-forward method as last resort..."
+            # Something else went wrong with port-forward
+            cat "${POD_LOG}.portforward" >> "${POD_LOG}"
+            echo "   ⚠️ Port-forward failed for an unexpected reason, checking error..."
             
-            # METHOD 3: Try port-forwarding to see if the port is available
-            TMP_PORT=$((10000 + $$))  # Use PID to create a somewhat unique port
-            kubectl port-forward -n cattle-system pod/${pod} ${TMP_PORT}:6666 > /dev/null 2>&1 &
+            # Try one more time with a different port number
+            TMP_PORT=$((11000 + $$))
+            kubectl port-forward -n cattle-system pod/${pod} ${TMP_PORT}:6666 > "${POD_LOG}.retry" 2>&1 &
             PF_PID=$!
-            sleep 3
+            sleep 2
             
-            # Check if port-forward is successful
             if kill -0 ${PF_PID} 2>/dev/null; then
                 PORT_STATUS="ENABLED"
                 echo "PORT_STATUS:ENABLED" >> "${POD_LOG}"
-                echo "   Port check completed using port-forward method"
-                kill ${PF_PID}
+                kill ${PF_PID} 2>/dev/null
+                wait ${PF_PID} 2>/dev/null
+                echo "   Port 6666 is ENABLED (port-forward retry successful)"
             else
                 PORT_STATUS="DISABLED"
                 echo "PORT_STATUS:DISABLED" >> "${POD_LOG}"
-                echo "   Port check completed using port-forward method"
+                echo "   Port 6666 is DISABLED (port-forward retry also failed)"
             fi
         fi
     fi
     
     # Evaluate results based on port status
     if [ -z "${PORT_STATUS}" ]; then
-        echo "   ❌ Failed to determine port status after all methods"
+        echo "   ❌ Failed to determine port status"
         echo "   Check logs at ${POD_LOG} for details"
         ERROR_COUNT=$((ERROR_COUNT + 1))
     else
