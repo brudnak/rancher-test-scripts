@@ -1,59 +1,60 @@
 #!/bin/sh
+# vai-snapshot.sh - Creates VAI snapshot, outputs ONLY base64 or ERROR
 set -e
 
-GO_VERSION="1.23.6"
+# Use cached tool
+[ -x /tmp/vai-vacuum ] && exec /tmp/vai-vacuum
 
-install_go() {
-    if command -v go >/dev/null 2>&1; then
-        return
-    fi
-    curl -sSL -o /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" --insecure
-    tar -C /usr/local -xzf /tmp/go.tgz
-    export PATH=$PATH:/usr/local/go/bin
-}
+# Setup Go silently
+export PATH=$PATH:/usr/local/go/bin
+if ! command -v go >/dev/null 2>&1; then
+    cd /tmp >/dev/null 2>&1
+    curl -sL https://go.dev/dl/go1.23.6.linux-amd64.tar.gz -o go.tar.gz 2>/dev/null || { echo "ERROR: Failed to download Go"; exit 1; }
+    tar -C /usr/local -xzf go.tar.gz 2>/dev/null || { echo "ERROR: Failed to install Go"; exit 1; }
+fi
 
-build_binary() {
-    if [ -x /usr/local/bin/vai-snapshot ]; then
-        return
-    fi
-
-    cat <<'EOGO' >/tmp/vai_snapshot.go
+# Build vacuum tool
+cd /tmp >/dev/null 2>&1
+cat > vacuum.go << 'EOF'
 package main
-
 import (
-    "context"
     "database/sql"
-    "log"
-    "time"
+    "encoding/base64"
+    "fmt"
+    "io"
+    "os"
     _ "modernc.org/sqlite"
 )
-
 func main() {
-    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-    defer cancel()
-
-    db, err := sql.Open("sqlite", "/var/lib/rancher/informer_object_cache.db")
+    db, err := sql.Open("sqlite", "/var/lib/rancher/informer_object_cache.db?mode=ro")
     if err != nil {
-        log.Fatalf("open db: %v", err)
+        fmt.Printf("ERROR: Failed to open database: %v\n", err)
+        os.Exit(1)
     }
     defer db.Close()
-
-    if _, err = db.ExecContext(ctx, "VACUUM INTO '/tmp/snapshot.db'"); err != nil {
-        log.Fatalf("vacuum: %v", err)
+    
+    if _, err = db.Exec("VACUUM INTO '/tmp/snapshot.db'"); err != nil {
+        fmt.Printf("ERROR: Failed to create snapshot: %v\n", err)
+        os.Exit(1)
     }
+    
+    f, err := os.Open("/tmp/snapshot.db")
+    if err != nil {
+        fmt.Printf("ERROR: Failed to read snapshot: %v\n", err)
+        os.Exit(1)
+    }
+    defer f.Close()
+    defer os.Remove("/tmp/snapshot.db")
+    
+    encoder := base64.NewEncoder(base64.StdEncoding, os.Stdout)
+    io.Copy(encoder, f)
+    encoder.Close()
 }
-EOGO
+EOF
 
-    mkdir -p /tmp/vai_snapshot
-    mv /tmp/vai_snapshot.go /tmp/vai_snapshot/main.go
-    cd /tmp/vai_snapshot
-    go mod init vai-snapshot >/dev/null 2>&1 || true
-    GO111MODULE=on go get modernc.org/sqlite >/dev/null
-    go build -o /usr/local/bin/vai-snapshot .
-}
+go mod init vacuum >/dev/null 2>&1 || { echo "ERROR: Failed to init Go module"; exit 1; }
+go get modernc.org/sqlite >/dev/null 2>&1 || { echo "ERROR: Failed to get sqlite module"; exit 1; }
+go build -ldflags="-w -s" -o vai-vacuum vacuum.go >/dev/null 2>&1 || { echo "ERROR: Failed to build vacuum tool"; exit 1; }
+chmod +x vai-vacuum
 
-install_go
-build_binary
-/bin/rm -f /tmp/snapshot.db
-/usr/local/bin/vai-snapshot
-
+exec ./vai-vacuum
